@@ -285,6 +285,23 @@ keep the client on a trusted network segment.
 > read the key. Use a long, random key — `mwb` logs a warning if the configured
 > key is very short.
 
+### Tray menu and profiles
+
+`mwb` shows a system-tray icon (a StatusNotifierItem, so it works in KDE Plasma
+and other desktops with a tray). Its menu shows the connection state and lets you
+pick the profile in use, switch the edge, toggle clipboard sync and file
+transfer, open the settings window, show the Windows screen, or quit.
+Changing a setting writes it to the active profile's config file and restarts
+`mwb` in place.
+
+**Settings…** opens a Qt window (it needs `qml6` from `qt6-declarative`) where
+you can edit the host, security key, machine name, port, screen size, edge,
+cursor speeds, input capture backend and clipboard/file options, and create,
+duplicate or delete profiles. Each profile is its own file: `config.toml` is the
+`Default` profile and the others are `~/.config/mwb/profiles/<name>.toml`
+(created `0600`). The profile in use is recorded in
+`~/.config/mwb/active-profile`. An explicit `-config` flag overrides it.
+
 ### Commands
 
 | Command | Description |

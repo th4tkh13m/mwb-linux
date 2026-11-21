@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -188,4 +189,41 @@ func (c *Config) FileDirectory() string {
 		return filepath.Join(os.TempDir(), "mwb")
 	}
 	return filepath.Join(home, "Downloads", "mwb")
+}
+
+// Update sets key to the raw TOML value (for example `"right"` or `false`) in
+// the config file at path. Other lines, comments and the file mode are kept;
+// a missing key is appended.
+func Update(path, key, rawValue string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	line := key + " = " + rawValue
+	found := false
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if strings.HasPrefix(t, key) && strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(t, key)), "=") {
+			lines[i] = line
+			found = true
+			break
+		}
+	}
+	if !found {
+		if n := len(lines); n > 0 && lines[n-1] == "" {
+			lines = append(lines[:n-1], line, "")
+		} else {
+			lines = append(lines, line)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")), info.Mode().Perm()); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

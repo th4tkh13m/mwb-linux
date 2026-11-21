@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -22,6 +24,8 @@ import (
 	"github.com/lucky-verma/mwb-linux/internal/input"
 	"github.com/lucky-verma/mwb-linux/internal/network"
 	"github.com/lucky-verma/mwb-linux/internal/selfupdate"
+	"github.com/lucky-verma/mwb-linux/internal/settings"
+	"github.com/lucky-verma/mwb-linux/internal/tray"
 )
 
 // version is stamped at release time via -ldflags "-X main.version=...".
@@ -88,9 +92,10 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
-	if *configPath == "" {
-		home, _ := os.UserHomeDir()
-		*configPath = filepath.Join(home, ".config", "mwb", "config.toml")
+	explicitConfig := *configPath != ""
+	if !explicitConfig {
+		// The profile in use decides which config file is loaded.
+		*configPath = config.ActiveConfigPath()
 	}
 
 	cfg, err := config.Load(*configPath)
@@ -183,6 +188,64 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// A missing tray (no StatusNotifierWatcher) is not fatal.
+	statusTray, err := tray.Start(cfg.Host,
+		func() tray.State {
+			return tray.State{
+				Edge: *edgeSide, Clipboard: clipboardEnabled, FileTransfer: cfg.FileTransferEnabled(),
+				Profile: config.ActiveProfile(), Profiles: config.ListProfiles(),
+			}
+		},
+		&tray.Actions{
+			Set: func(key, raw string) {
+				if err := config.Update(*configPath, key, raw); err != nil {
+					slog.Error("could not save setting", "key", key, "err", err)
+					return
+				}
+				slog.Info("setting changed, restarting", "key", key, "value", raw)
+				restartSelf(false)
+			},
+			SwitchProfile: func(name string) {
+				path, err := config.ProfilePath(name)
+				if err == nil {
+					_, err = config.Load(path)
+				}
+				if err == nil {
+					err = config.SetActiveProfile(name)
+				}
+				if err != nil {
+					slog.Error("cannot switch profile", "profile", name, "err", err)
+					launchDetached("notify-send", "Mouse Without Borders", "Cannot use profile "+name+": "+err.Error())
+					return
+				}
+				slog.Info("profile switched, restarting", "profile", name)
+				restartSelf(true)
+			},
+			OpenSettings: func() {
+				if !settingsOpen.CompareAndSwap(false, true) {
+					return
+				}
+				defer settingsOpen.Store(false)
+				restart, err := settings.Run()
+				if err != nil {
+					slog.Error("settings", "err", err)
+					launchDetached("notify-send", "Mouse Without Borders", "Settings: "+err.Error())
+					return
+				}
+				if restart {
+					slog.Info("settings saved, restarting")
+					restartSelf(true)
+				}
+			},
+			ShowScreen: func() { launchDetached("mwb-screen") },
+			OpenConfig: func() { launchDetached("xdg-open", *configPath) },
+			Quit:       func() { sigCh <- syscall.SIGTERM },
+		})
+	if err != nil {
+		slog.Warn("tray icon unavailable", "err", err)
+	}
+	defer statusTray.Close()
+
 	// Start TCP server to accept incoming connections from Windows MWB.
 	// Only the configured host (cfg.Host) is accepted as an inbound peer.
 	serverStop := make(chan struct{})
@@ -229,6 +292,7 @@ func main() {
 			}
 			close(connectStop)
 			activeMachineID.Store(conn.MachineID)
+			statusTray.SetConnected(true)
 			handler.OnBecameActive = nil
 			handler.OnActivated = nil
 			handler.OnReclaimed = nil
@@ -319,6 +383,7 @@ func main() {
 			activeMachineID.CompareAndSwap(conn.MachineID, 0)
 
 			_ = conn.Close()
+			statusTray.SetConnected(false)
 			slog.Info("disconnected, will reconnect in 100ms")
 		}
 	}()
@@ -326,3 +391,57 @@ func main() {
 	sig := <-sigCh
 	slog.Info("shutting down", "signal", sig)
 }
+
+// restartSelf replaces the running process with a fresh copy so a changed
+// setting takes effect. CLI flags such as -edge still override the config file.
+// When profileChanged is true an explicit -config flag is dropped so the
+// restarted client follows the profile in use.
+func restartSelf(profileChanged bool) {
+	exe, err := os.Executable()
+	if err != nil {
+		slog.Error("restart failed", "err", err)
+		return
+	}
+	args := os.Args
+	if profileChanged {
+		args = dropConfigFlag(args)
+	}
+	if err := syscall.Exec(exe, args, os.Environ()); err != nil {
+		slog.Error("restart failed", "err", err)
+	}
+}
+
+// launchDetached starts a helper program (searched in ~/.local/bin too) without waiting for it.
+func launchDetached(name string, args ...string) {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		if home, herr := os.UserHomeDir(); herr == nil {
+			path = filepath.Join(home, ".local", "bin", name)
+		}
+	}
+	cmd := exec.Command(path, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		slog.Error("launch failed", "cmd", name, "err", err)
+		return
+	}
+	go func() { _ = cmd.Wait() }()
+}
+
+// dropConfigFlag removes -config/--config (with its value) from args.
+func dropConfigFlag(args []string) []string {
+	var out []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "-config" || a == "--config":
+			i++
+		case strings.HasPrefix(a, "-config=") || strings.HasPrefix(a, "--config="):
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+var settingsOpen atomic.Bool
