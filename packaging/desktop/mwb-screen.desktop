@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Windows Screen (view only)
+Comment=Mini window showing the Windows laptop screen
+Exec=mwb-screen
+Icon=mwb-screen
+Terminal=false
+Categories=Utility;

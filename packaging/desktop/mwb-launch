@@ -1,0 +1,9 @@
+#!/bin/sh
+# Launcher used by mwb.desktop: runs mwb with bidirectional input, logging to ~/.cache/mwb.log.
+# Does nothing if mwb is already running (its tray icon is the control point).
+if pgrep -x mwb >/dev/null 2>&1; then
+  command -v notify-send >/dev/null 2>&1 && notify-send -i mwb "Mouse Without Borders" "Already running - use the tray icon."
+  exit 0
+fi
+mkdir -p "$HOME/.cache"
+exec "$HOME/.local/bin/mwb" -bidi >>"$HOME/.cache/mwb.log" 2>&1

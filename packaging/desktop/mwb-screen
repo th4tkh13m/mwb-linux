@@ -1,0 +1,10 @@
+#!/bin/sh
+# View-only mini window of the Windows screen. Start the ffmpeg listener on
+# Windows first; this connects to it and retries until it is available.
+HOST="${MWB_SCREEN_HOST:-$(sed -n 's/^host *= *"\(.*\)"/\1/p' "$HOME/.config/mwb/config.toml")}"
+PORT="${MWB_SCREEN_PORT:-1740}"
+while :; do
+  mpv --no-cache --untimed --profile=low-latency --ontop --geometry=480x270 \
+      --title="Windows screen" "tcp://$HOST:$PORT" && break
+  sleep 2
+done

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Mouse Without Borders
+Comment=Share keyboard, mouse and clipboard with a Windows PC
+Exec=mwb-launch
+Icon=mwb
+Terminal=false
+Categories=Utility;
+StartupNotify=false
