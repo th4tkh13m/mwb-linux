@@ -22,6 +22,7 @@ type fakeNativeCapture struct {
 	reentered bool
 	reenterX  int32
 	reenterY  int32
+	done      chan struct{}
 }
 
 func (f *fakeNativeCapture) Name() string       { return "fake-native" }
@@ -30,6 +31,8 @@ func (f *fakeNativeCapture) Start() error {
 	f.started = true
 	return f.startErr
 }
+func (f *fakeNativeCapture) Done() <-chan struct{} { return f.done }
+
 func (f *fakeNativeCapture) Reenter(x, y int32) error {
 	f.reentered = true
 	f.reenterX = x
@@ -611,4 +614,42 @@ func TestReturnKeepsHeightAndRecentersBeforeRelease(t *testing.T) {
 	if pointer.x != entryClearance || pointer.y != 360 || grabbed() != 0 || c.canSwitch {
 		t.Fatalf("incorrect return: position=%d,%d grabbed=%d canSwitch=%v", pointer.x, pointer.y, grabbed(), c.canSwitch)
 	}
+}
+
+func TestSuperviseNativeRestartsStoppedBackend(t *testing.T) {
+	first := &fakeNativeCapture{screen: ScreenInfo{Width: 100, Height: 100}, done: make(chan struct{})}
+	second := &fakeNativeCapture{screen: ScreenInfo{Width: 100, Height: 100}, done: make(chan struct{})}
+	built := make(chan struct{}, 1)
+	withPortalTestSeams(t, func() bool { return true }, func(*Capturer) (nativeCapture, error) {
+		built <- struct{}{}
+		return second, nil
+	})
+	c := New(nil, ScreenInfo{Width: 100, Height: 100}, "right")
+	c.native = first
+	c.superviseNative(first)
+	close(first.done) // simulate an internal portal failure
+
+	select {
+	case <-built:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopped backend was not restarted")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		c.mu.Lock()
+		got := c.native
+		c.mu.Unlock()
+		if got == second {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("restarted backend was not installed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !first.closed || !second.started {
+		t.Fatalf("first closed=%v second started=%v", first.closed, second.started)
+	}
+	close(c.stopCh)
+	c.wg.Wait()
 }

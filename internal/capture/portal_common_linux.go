@@ -24,6 +24,8 @@ type nativeCapture interface {
 	Start() error
 	Reenter(x, y int32) error
 	Close() error
+	// Done is closed when the backend stops, including on internal failure.
+	Done() <-chan struct{}
 }
 
 type portalZone struct {

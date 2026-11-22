@@ -149,6 +149,9 @@ func portalSetupError(action string, err error) error {
 	return fmt.Errorf("%s: %w", action, err)
 }
 
+// Done is closed once the capture stops, whether by Close or by failure.
+func (p *portalCapture) Done() <-chan struct{} { return p.ctx.Done() }
+
 func (p *portalCapture) Name() string { return "portal/libei" }
 
 func (p *portalCapture) Screen() ScreenInfo {
@@ -602,7 +605,7 @@ func (p *portalCapture) request(method string, timeout time.Duration, args func(
 	if err != nil {
 		return nil, err
 	}
-	responseCh := make(chan *dbus.Signal, 1)
+	responseCh := make(chan *dbus.Signal, 32)
 	p.conn.Signal(responseCh)
 	defer p.conn.RemoveSignal(responseCh)
 	match := []dbus.MatchOption{
@@ -624,33 +627,41 @@ func (p *portalCapture) request(method string, timeout time.Duration, args func(
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	select {
-	case signal := <-responseCh:
-		if signal == nil || len(signal.Body) != 2 {
-			return nil, errors.New("portal returned a malformed response")
+	for {
+		select {
+		case signal := <-responseCh:
+			// conn.Signal delivers every matched signal to every registered
+			// channel, so InputCapture signals (Activated, ZonesChanged, ...)
+			// also land here. Only this request's Response is ours.
+			if !isPortalResponseFor(signal, requestPath) {
+				continue
+			}
+			if len(signal.Body) != 2 {
+				return nil, errors.New("portal returned a malformed response")
+			}
+			code, err := decodePortalUint32(signal.Body[0])
+			if err != nil {
+				return nil, fmt.Errorf("decode portal response: %w", err)
+			}
+			results, ok := signal.Body[1].(map[string]dbus.Variant)
+			if !ok {
+				return nil, fmt.Errorf("portal response has unexpected results type %T", signal.Body[1])
+			}
+			switch code {
+			case 0:
+				return results, nil
+			case 1:
+				return nil, errors.New("request was cancelled")
+			default:
+				return nil, fmt.Errorf("request failed with response code %d", code)
+			}
+		case <-timer.C:
+			_ = p.conn.Object(portalBusName, requestPath).Call(portalRequestIface+".Close", 0).Err
+			return nil, errors.New("timed out waiting for portal response")
+		case <-p.ctx.Done():
+			_ = p.conn.Object(portalBusName, requestPath).Call(portalRequestIface+".Close", 0).Err
+			return nil, p.ctx.Err()
 		}
-		code, err := decodePortalUint32(signal.Body[0])
-		if err != nil {
-			return nil, fmt.Errorf("decode portal response: %w", err)
-		}
-		results, ok := signal.Body[1].(map[string]dbus.Variant)
-		if !ok {
-			return nil, fmt.Errorf("portal response has unexpected results type %T", signal.Body[1])
-		}
-		switch code {
-		case 0:
-			return results, nil
-		case 1:
-			return nil, errors.New("request was cancelled")
-		default:
-			return nil, fmt.Errorf("request failed with response code %d", code)
-		}
-	case <-timer.C:
-		_ = p.conn.Object(portalBusName, requestPath).Call(portalRequestIface+".Close", 0).Err
-		return nil, errors.New("timed out waiting for portal response")
-	case <-p.ctx.Done():
-		_ = p.conn.Object(portalBusName, requestPath).Call(portalRequestIface+".Close", 0).Err
-		return nil, p.ctx.Err()
 	}
 }
 
@@ -774,4 +785,9 @@ func savePortalRestoreToken(token string) {
 		_ = os.Remove(temporary)
 		slog.Warn("save portal restore token", "err", err)
 	}
+}
+
+// isPortalResponseFor reports whether signal is the Request.Response for path.
+func isPortalResponseFor(signal *dbus.Signal, path dbus.ObjectPath) bool {
+	return signal != nil && signal.Path == path && signal.Name == portalRequestIface+".Response"
 }

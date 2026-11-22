@@ -371,6 +371,7 @@ func (c *Capturer) Run() error {
 				return fmt.Errorf("start portal capture: %w", err)
 			}
 			slog.Info("capture backend selected", "backend", native.Name(), "width", native.Screen().Width, "height", native.Screen().Height)
+			c.superviseNative(native)
 			return nil
 		}
 		// Preserve the existing X11 path only when the portal is absent. A denied
@@ -383,6 +384,72 @@ func (c *Capturer) Run() error {
 	}
 
 	return c.runX11()
+}
+
+// superviseNative restarts the portal backend if it stops on its own. A
+// transient portal error used to leave the process alive but with capture dead
+// until restart: the Linux mouse stopped reaching the remote machine.
+func (c *Capturer) superviseNative(native nativeCapture) {
+	done := native.Done()
+	if done == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.stopped {
+		c.mu.Unlock()
+		return
+	}
+	c.wg.Add(1)
+	c.mu.Unlock()
+	go func() {
+		defer c.wg.Done()
+		select {
+		case <-c.stopCh:
+			return
+		case <-done:
+		}
+		for delay := time.Second; ; delay = min(delay*2, 30*time.Second) {
+			select {
+			case <-c.stopCh:
+				return
+			case <-time.After(delay):
+			}
+			slog.Warn("native Wayland capture stopped; restarting", "after", delay)
+			c.mu.Lock()
+			old := c.native
+			c.mu.Unlock()
+			if old != nil {
+				_ = old.Close()
+			}
+			next, err := portalCaptureFactory(c)
+			if err == nil {
+				if err = next.Start(); err != nil {
+					_ = next.Close()
+				}
+			}
+			if err != nil {
+				slog.Error("restart native Wayland capture", "err", err)
+				continue
+			}
+			c.mu.Lock()
+			if c.stopped {
+				c.mu.Unlock()
+				_ = next.Close()
+				return
+			}
+			c.native = next
+			c.screen = next.Screen()
+			c.mu.Unlock()
+			slog.Info("native Wayland capture restarted")
+			done = next.Done()
+			select {
+			case <-c.stopCh:
+				return
+			case <-done:
+			}
+			delay = time.Second / 2
+		}
+	}()
 }
 
 func (c *Capturer) runX11() error {

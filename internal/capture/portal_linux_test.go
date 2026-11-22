@@ -177,3 +177,17 @@ func TestPortalRestoreTokenUsesPrivateStateFile(t *testing.T) {
 		t.Fatalf("restore token mode = %o, want 600", mode)
 	}
 }
+
+func TestIsPortalResponseForIgnoresOtherSignals(t *testing.T) {
+	path := dbus.ObjectPath("/org/freedesktop/portal/desktop/request/1_2/mwb_request_1")
+	resp := &dbus.Signal{Path: path, Name: portalRequestIface + ".Response"}
+	zones := &dbus.Signal{Path: portalObjectPath, Name: portalInputIface + ".ZonesChanged",
+		Body: []interface{}{dbus.ObjectPath("/s"), map[string]dbus.Variant{}}}
+	other := &dbus.Signal{Path: "/other", Name: portalRequestIface + ".Response"}
+	if !isPortalResponseFor(resp, path) {
+		t.Fatal("own response rejected")
+	}
+	if isPortalResponseFor(zones, path) || isPortalResponseFor(other, path) || isPortalResponseFor(nil, path) {
+		t.Fatal("foreign signal accepted as the response")
+	}
+}
