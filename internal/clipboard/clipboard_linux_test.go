@@ -217,3 +217,23 @@ func TestLargeImagesUseFileChannelAndSameSizeChangesAreDistinct(t *testing.T) {
 		t.Fatal("large image did not use the clipboard file channel")
 	}
 }
+
+// PowerToys ends the pasted string at the first NUL, so the payload must carry
+// one directly after the text.
+func TestTextPayloadIsNULTerminated(t *testing.T) {
+	const text = "first line\nlast line\n'"
+	payload, err := encodeTextPayload(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := deflateDecompress(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := encodeUTF16LE("TXT" + text + "\x00"); !bytes.Equal(raw, want) {
+		t.Fatalf("payload = %x, want %x", raw, want)
+	}
+	if got := decodeUTF16LE(raw); got != "TXT"+text {
+		t.Fatalf("decoded = %q", got)
+	}
+}

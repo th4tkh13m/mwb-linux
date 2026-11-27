@@ -323,11 +323,7 @@ func (m *Manager) sendClipboard() {
 func (m *Manager) sendText(text string) {
 	// Prepend format marker: "TXT" + text
 	// MWB uses multi-format with GUID separator, but for simplicity we just send TXT
-	markedText := "TXT" + text
-	utf16 := encodeUTF16LE(markedText)
-
-	// Deflate compress
-	compressed, err := deflateCompress(utf16)
+	compressed, err := encodeTextPayload(text)
 	if err != nil {
 		slog.Error("clipboard compress failed", "err", err)
 		return
@@ -375,6 +371,16 @@ func (m *Manager) sendText(text string) {
 	}
 
 	slog.Info("clipboard sent to remote", "chunks", (len(compressed)+dataSize-1)/dataSize)
+}
+
+// encodeTextPayload builds the compressed form of a text clipboard.
+//
+// The trailing NUL is required. PowerToys decodes its whole decompression
+// buffer, not only the bytes the decompressor reports, and relies on a NUL to
+// end the string. Decompressors may leave scratch data past the reported
+// length, which Windows would otherwise paste after the text.
+func encodeTextPayload(text string) ([]byte, error) {
+	return deflateCompress(encodeUTF16LE("TXT" + text + "\x00"))
 }
 
 // handleChunk accumulates a clipboard data chunk.

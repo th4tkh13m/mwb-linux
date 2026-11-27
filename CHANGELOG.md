@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Send clipboard images larger than 1 MB over the clipboard channel, process
   incoming images as raw bytes, and detect distinct screenshots of equal size.
+- Terminate outgoing clipboard text with a NUL so Windows no longer appends
+  stray characters to pasted text.
 
 ## [0.6.3] - 2026-09-15
 
